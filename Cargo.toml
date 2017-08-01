@@ -1,0 +1,22 @@
+[package]
+name = "git_hasher"
+version = "0.1.0"
+authors = ["Chen Weiguang <chen.weiguang@gmail.com>"]
+
+[dependencies]
+crypto-hash = "=0.3.0"
+derive-new = "=0.5.0"
+error-chain = "=0.11.0-rc.2"
+file = "=1.1.1"
+git2 = "=0.6.6"
+log = "=0.3.8"
+log4rs = "=0.7.0"
+serde = "=1.0.11"
+serde_derive = "=1.0.11"
+serde_yaml = "=0.7.1"
+simple_logger = "=0.4.0"
+structopt = "=0.1.0"
+structopt-derive = "=0.1.0"
+strum = "=0.6.0"
+strum_macros = "=0.6.1"
+toml = "=0.4.4"

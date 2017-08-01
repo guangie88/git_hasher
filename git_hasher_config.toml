@@ -1,0 +1,8 @@
+# default uses hash.yaml
+hash_path = "hash.yaml"
+
+# MD5, SHA1, SHA256
+hash_meth = "MD5"
+
+# should almost always be .
+git_path = "."
