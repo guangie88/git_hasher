@@ -6,3 +6,6 @@ hash_meth = "MD5"
 
 # should almost always be .
 git_path = "."
+
+# regex patterns to match
+regex_matches = ['.+']

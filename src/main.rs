@@ -5,6 +5,7 @@ extern crate file;
 extern crate git2;
 #[macro_use] extern crate log;
 extern crate log4rs;
+extern crate regex;
 extern crate serde;
 #[macro_use] extern crate serde_derive;
 extern crate serde_yaml;
@@ -17,6 +18,7 @@ extern crate toml;
 
 use crypto_hash::Algorithm;
 use git2::{Repository, StatusOptions};
+use regex::Regex;
 use std::process;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -52,6 +54,9 @@ struct FileConfig {
 
     /// Local git repository working directory path.
     git_path: String,
+
+    /// Regex patterns to match after .gitignore filtering.
+    regex_matches: Vec<String>,
 }
 
 #[derive(Deserialize, Serialize, new)]
@@ -59,7 +64,7 @@ struct HashElement {
     /// Path of git working file (can be untracked).
     path: String,
 
-    /// Hash
+    /// Hash value of binary content of file.
     hash: String,
 }
 
@@ -127,6 +132,10 @@ fn run() -> errors::Result<()> {
 
     let (algo_enum, algo) = get_algo(&config.hash_meth)?;
 
+    let regexes = config.regex_matches.iter()
+        .map(|s| Regex::new(s).chain_err(|| format!("Unable to convert string: {} to regex pattern", s)))
+        .collect::<Result<Vec<Regex>, errors::Error>>()?;
+
     // git section
     let repo = Repository::open(&config.git_path)
         .chain_err(|| format!("Unable to find local git working directory at '{}'", config.git_path))?;
@@ -141,6 +150,7 @@ fn run() -> errors::Result<()> {
 
     let mut filtered_paths: Vec<String> = statuses.iter()
         .filter_map(|s| s.path().map(|p| p.to_owned()))
+        .filter(|p| regexes.iter().any(|r| r.is_match(p)))
         .collect();
 
     filtered_paths.sort();
@@ -153,11 +163,13 @@ fn run() -> errors::Result<()> {
         })
         .inspect(|res| {
             if let &Err(ref e) = res {
-                eprintln!("Unable to read file in git working directory: {}", e);
+                error!("Unable to read file in git working directory: {}", e);
             }
         })
         .filter_map(|res| res.ok())
         .collect();
+
+    info!("# of matching file(s): {}", hash_elems.len());
 
     // serialize into file section
     let hash_collection = HashCollection::new(algo_enum, hash_elems);
