@@ -9,3 +9,9 @@ git_path = "."
 
 # regex patterns to match
 regex_matches = ['.+']
+
+# username to use for addcommit option
+username = "anonymous"
+
+# email address to use for addcommit option
+email = "anonymous@xxx.com"

@@ -1,5 +1,6 @@
 extern crate crypto_hash;
 #[macro_use] extern crate derive_new;
+extern crate docopt;
 #[macro_use] extern crate error_chain;
 extern crate file;
 extern crate git2;
@@ -10,14 +11,13 @@ extern crate serde;
 #[macro_use] extern crate serde_derive;
 extern crate serde_yaml;
 extern crate simple_logger;
-extern crate structopt;
-#[macro_use] extern crate structopt_derive;
 extern crate strum;
 #[macro_use] extern crate strum_macros;
 extern crate toml;
 
 use crypto_hash::Algorithm;
-use git2::{Repository, StatusOptions};
+use docopt::Docopt;
+use git2::{IndexAddOption, ObjectType, Repository, ResetType, Signature, StatusOptions};
 use git2::build::CheckoutBuilder;
 use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet};
@@ -28,7 +28,6 @@ use std::path::Path;
 use std::str::FromStr;
 use std::string::ToString;
 use std::sync::mpsc;
-use structopt::StructOpt;
 
 pub mod errors {
     error_chain! {
@@ -38,14 +37,27 @@ pub mod errors {
 
 use errors::ResultExt;
 
-#[derive(StructOpt, Debug)]
-#[structopt(name = "Git Hasher", about = "Performs hashing based on current local git repository")]
-struct ArgConfig {
-    #[structopt(short = "c", long = "config", help = "Config file path", default_value = "git_hasher_config.toml")]
-    config_path: String,
+// parsing of arguments
+const USAGE: &'static str = "
+Git Hasher program to generate hash file within git working directory.
 
-    #[structopt(short = "l", long = "log", help = "Log config file path")]
-    log_config_path: Option<String>,
+Usage:
+    git_hasher [--conf=<conf>] [--log=<log>]
+    git_hasher addcommit <commit-msg> [--conf=<conf>] [--log=<log>]
+    git_hasher (-h | --help)
+
+Options:
+    -h --help       Show this help message.
+    --conf=<conf>   Config file path [default: git_hasher_config.toml].
+    --log=<log>     Log config file path.
+";
+
+#[derive(Debug, Deserialize)]
+struct ArgConfig {
+    flag_conf: String,
+    flag_log: Option<String>,
+    cmd_addcommit: bool,
+    arg_commit_msg: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -61,6 +73,12 @@ struct FileConfig {
 
     /// Regex patterns to match after .gitignore filtering.
     regex_matches: Vec<String>,
+
+    /// Username to use for addcommit option.
+    username: Option<String>,
+
+    /// Email address to use for addcommit option.
+    email: Option<String>,
 }
 
 #[derive(Deserialize, PartialEq, Eq, PartialOrd, Ord, Serialize, new)]
@@ -97,10 +115,10 @@ enum NdType {
     New, Deleted,
 }
 
-fn init_logger(log_config_path: &Option<String>) -> errors::Result<()> {
-    if let &Some(ref log_config_path) = log_config_path {
-        log4rs::init_file(log_config_path, Default::default())
-            .chain_err(|| format!("Unable to initialize log4rs logger with the given config file at '{}'", log_config_path))?;
+fn init_logger(flag_log: &Option<String>) -> errors::Result<()> {
+    if let &Some(ref flag_log) = flag_log {
+        log4rs::init_file(flag_log, Default::default())
+            .chain_err(|| format!("Unable to initialize log4rs logger with the given config file at '{}'", flag_log))?;
     } else {
         simple_logger::init()
             .chain_err(|| "Unable to initialize default logger")?;
@@ -163,10 +181,14 @@ where I: Iterator<Item=(&'a str, &'a str)> {
 
 fn run() -> errors::Result<()> {
     // initialization
-    let arg_config = ArgConfig::from_args();
-    init_logger(&arg_config.log_config_path)?;
+    let arg_config: ArgConfig = Docopt::new(USAGE)
+        .and_then(|d| d.deserialize())
+        .unwrap_or_else(|e| e.exit());
 
-    let config_str = read_string_from_file(&arg_config.config_path)?;
+    // let arg_config = ArgConfig::from_args();
+    init_logger(&arg_config.flag_log)?;
+
+    let config_str = read_string_from_file(&arg_config.flag_conf)?;
 
     let config: FileConfig = toml::from_str(&config_str)
         .chain_err(|| format!("Unable to parse config as required toml format: {}", config_str))?;
@@ -291,7 +313,7 @@ fn run() -> errors::Result<()> {
     // compare both the hash collections
     let curr_elems = &hash_collection.elements;
     
-    if let Some(prev_hash_collection) = prev_hash_collection {
+    let has_changes = if let Some(prev_hash_collection) = prev_hash_collection {
         if &prev_hash_collection.meth == &hash_collection.meth {
             let prev_elems = &prev_hash_collection.elements;
 
@@ -339,14 +361,81 @@ fn run() -> errors::Result<()> {
             info!(" Deleted count: {}", deleted_entries_count);
             info!("Modified count: {}", modified_entries_count);
             info!("   Total count: {}", curr_elems.len());
-            
+
+            // indicate if the index is different from working tree
+            new_entries_count > 0 || deleted_entries_count > 0 || modified_entries_count > 0
         } else {
-            error!("Previous hash collection uses method: {}, while current hash collection uses method: {}, which is not comparable",
+            // not allowed to proceed
+            bail!("Previous hash collection uses method: {}, while current hash collection uses method: {}, which is not comparable",
                 prev_hash_collection.meth.to_string(), hash_collection.meth.to_string());
         }
     } else {
         info!("All files in current hash yaml file are NEW");
         info!("Total count: {}", curr_elems.len());
+
+        // indicate if the index is different from working tree
+        curr_elems.len() > 0
+    };
+
+    // performs possibly additional operations
+    if let &Some(ref arg_commit_msg) = &arg_config.arg_commit_msg {
+        if arg_commit_msg.is_empty() {
+            bail!("Commit message cannot be empty for addcommit operation");
+        }
+
+        if !has_changes {
+            bail!("No changes found in working tree for addcommit operation");
+        }
+
+        let username = config.username.as_ref()
+            .ok_or_else(|| format!("No username in '{}' provided for addcommit option", arg_config.flag_conf))?;
+
+        let email = config.email.as_ref()
+            .ok_or_else(|| format!("No email address in '{}' provided for addcommit option", arg_config.flag_conf))?;
+
+        let mut index = repo.index()
+            .chain_err(|| "Unable to get index of git local repository")?;
+
+        index.add_all(["."].iter(), IndexAddOption::empty(), None)
+            .chain_err(|| "Unable to add all files into index for git local repository")?;
+
+        let new_tree_oid = index.write_tree()
+            .chain_err(|| "Unable to write tree using the updated index")?;
+
+        let new_tree = repo.find_tree(new_tree_oid)
+            .chain_err(|| "Unable to get tree from new OID")?;
+
+        let head_commit = repo.head()
+            .chain_err(|| "Unable to get the reference of HEAD")?
+            .resolve()
+            .chain_err(|| "Unable to resolve the reference of HEAD")?
+            .peel(ObjectType::Commit)
+            .chain_err(|| "Unable to peel after resolving reference of HEAD")?
+            .into_commit()
+            .map_err(|_| git2::Error::from_str("Cannot find commit"))
+            .chain_err(|| "Unable to convert into commit after peeling")?;
+
+        let author = Signature::now(username, email)
+            .chain_err(|| "Unable to create signature")?;
+
+        let committer = author.clone();
+        
+        let new_commit_oid = repo.commit(
+            Some("HEAD"),
+            &author,
+            &committer,
+            arg_commit_msg,
+            &new_tree,
+            &[&head_commit])
+            .chain_err(|| "Unable to perform commit into local git repository")?;
+
+        let new_commit = repo.find_commit(new_commit_oid)
+            .chain_err(|| "Unable to find new commit from OID")?;
+
+        repo.reset(new_commit.as_object(), ResetType::Hard, None)
+            .chain_err(|| "Unable to reset HEAD to the new commit")?;
+
+        info!("Successfully added and committed new changes!");
     }
 
     Ok(())
