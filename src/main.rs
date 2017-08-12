@@ -46,10 +46,15 @@ struct ArgConfig {
 
 #[derive(Debug)]
 enum ArgOps {
+    Init,
     Hash,
     AddCommit {
         msg: String,
     },
+}
+
+struct InitConfig {
+    file_config: FileConfig,
 }
 
 struct HashConfig {
@@ -178,6 +183,15 @@ where I: Iterator<Item=(&'a str, &'a str)> {
 
     if count == 0 { info!("NONE"); }
     count
+}
+
+fn init_impl(init_config: InitConfig) -> errors::Result<()> {
+    Repository::init(&init_config.file_config.git_path)
+        .chain_err(|| format!("Unable to initialize local git repository at '{}'", init_config.file_config.git_path))?;
+
+    info!("Successful initializing local git repository at '{}'", init_config.file_config.git_path);
+
+    Ok(())
 }
 
 fn hash_impl(hash_config: HashConfig) -> errors::Result<()> {
@@ -474,6 +488,12 @@ fn run(arg_config: ArgConfig) -> errors::Result<()> {
         .chain_err(|| format!("Unable to parse config as required toml format: {}", config_str))?;
 
     match &arg_config.ops {
+        &ArgOps::Init => {
+            init_impl(InitConfig {
+                file_config: config,
+            })
+        },
+
         &ArgOps::Hash => {
             hash_impl(HashConfig {
                 file_config: config,
@@ -490,46 +510,57 @@ fn run(arg_config: ArgConfig) -> errors::Result<()> {
 }
 
 fn main() {
-    const HASH_SUB_CMD: &'static str = "hash";
-    const ADDCOMMIT_SUB_CMD: &'static str = "addcommit";
     const VERSION_STR: &'static str = "0.1.0";
     const AUTHOR_STR: &'static str = "Chen Weiguang <chen.weiguang@gmail.com>";
+
+    const CONF_PARAM: &'static str = "conf";
+    const LOG_PARAM: &'static str = "log";
+    const INIT_SUB_CMD: &'static str = "init";
+    const HASH_SUB_CMD: &'static str = "hash";
+    const ADDCOMMIT_SUB_CMD: &'static str = "addcommit";
+    const ADDCOMMIT_MSG_PARAM: &'static str = "msg";
 
     // argument parsing
     let matches = App::new("Git Hasher")
         .version(VERSION_STR)
         .author(AUTHOR_STR)
         .about("Generate hash file within git working directory.")
-        .arg(Arg::with_name("conf")
+        .arg(Arg::with_name(CONF_PARAM)
             .short("c")
-            .long("conf")
+            .long(CONF_PARAM)
             .help("Config file path"))
-        .arg(Arg::with_name("log")
+        .arg(Arg::with_name(LOG_PARAM)
             .short("l")
-            .long("log")
+            .long(LOG_PARAM)
             .help("Log config file path"))
         .setting(AppSettings::SubcommandRequiredElseHelp)
-        .subcommand(SubCommand::with_name(HASH_SUB_CMD)
-            .about("Performs hashing on files within git working directory filtered by .gitignore.")
+        .subcommand(SubCommand::with_name(INIT_SUB_CMD)
+            .about("Performs git init to create a new local git repository")
             .version(VERSION_STR)
             .author(AUTHOR_STR))
-        .subcommand(SubCommand::with_name("addcommit")
-            .about("Performs git add . --all & git commit with a required commit message.")
+        .subcommand(SubCommand::with_name(HASH_SUB_CMD)
+            .about("Performs hashing on files within git working directory filtered by .gitignore")
+            .version(VERSION_STR)
+            .author(AUTHOR_STR))
+        .subcommand(SubCommand::with_name(ADDCOMMIT_SUB_CMD)
+            .about("Performs git add . --all & git commit with a required commit message")
             .version(VERSION_STR)
             .author(AUTHOR_STR)
-            .arg(Arg::with_name("msg")
+            .arg(Arg::with_name(ADDCOMMIT_MSG_PARAM)
                 .help("Message to commit")
                 .required(true)
                 .index(1)))
         .get_matches();
 
-    let conf = matches.value_of("conf").unwrap_or("git_hasher_config.toml").to_owned();
-    let log = matches.value_of("log").map(|log| log.to_owned());
+    let conf = matches.value_of(CONF_PARAM).unwrap_or("git_hasher_config.toml").to_owned();
+    let log = matches.value_of(LOG_PARAM).map(|log| log.to_owned());
 
-    let ops = if let Some(_) = matches.subcommand_matches(HASH_SUB_CMD) {
+    let ops = if let Some(_) = matches.subcommand_matches(INIT_SUB_CMD) {
+        Some(ArgOps::Init)
+    } else if let Some(_) = matches.subcommand_matches(HASH_SUB_CMD) {
         Some(ArgOps::Hash)
     } else if let Some(submatches) = matches.subcommand_matches(ADDCOMMIT_SUB_CMD) {
-        let msg = submatches.value_of("msg")
+        let msg = submatches.value_of(ADDCOMMIT_MSG_PARAM)
             .expect("msg argument must be set from the command line")
             .to_owned();
 
