@@ -122,7 +122,7 @@ enum NdType {
 }
 
 fn init_logger(log: &Option<String>) -> errors::Result<()> {
-    if let &Some(ref log) = log {
+    if let Some(ref log) = *log {
         log4rs::init_file(log, Default::default())
             .chain_err(|| format!("Unable to initialize log4rs logger with the given config file at '{}'", log))?;
     } else {
@@ -172,7 +172,7 @@ where I: Iterator<Item=(&'a str, &'a str, &'a str)> {
     count
 }
 
-fn print_and_sum_new_delete<'a, I>(entries: I, nd: NdType) -> u64
+fn print_and_sum_new_delete<'a, I>(entries: I, nd: &NdType) -> u64
 where I: Iterator<Item=(&'a str, &'a str)> {
     info!("-- {} Entries --", nd.to_string());
 
@@ -185,7 +185,7 @@ where I: Iterator<Item=(&'a str, &'a str)> {
     count
 }
 
-fn init_impl(init_config: InitConfig) -> errors::Result<()> {
+fn init_impl(init_config: &InitConfig) -> errors::Result<()> {
     Repository::init(&init_config.file_config.git_path)
         .chain_err(|| format!("Unable to initialize local git repository at '{}'", init_config.file_config.git_path))?;
 
@@ -194,7 +194,7 @@ fn init_impl(init_config: InitConfig) -> errors::Result<()> {
     Ok(())
 }
 
-fn hash_impl(hash_config: HashConfig) -> errors::Result<()> {
+fn hash_impl(hash_config: &HashConfig) -> errors::Result<()> {
     let (algo_enum, algo) = get_algo(&hash_config.file_config.hash_meth)?;
 
     let regexes = hash_config.file_config.regex_matches.iter()
@@ -206,7 +206,7 @@ fn hash_impl(hash_config: HashConfig) -> errors::Result<()> {
         .chain_err(|| format!("Unable to find local git working directory at '{}'", hash_config.file_config.git_path))?;
 
     // attempt to parse the current commit (destructive) hash yaml first
-    let prev_hash_collection = match repo.status_file(&Path::new(&hash_config.file_config.hash_path)) {
+    let prev_hash_collection = match repo.status_file(Path::new(&hash_config.file_config.hash_path)) {
         Ok(status) => {
             debug!("Hash path status: {:?}", status);
 
@@ -294,7 +294,7 @@ fn hash_impl(hash_config: HashConfig) -> errors::Result<()> {
             buf.map(|buf| HashElement::new(p, crypto_hash::hex_digest(algo.clone(), &buf))).map_err(|e| (e, p_clone))
         })
         .inspect(|res| {
-            if let &Err((ref e, ref p)) = res {
+            if let Err((ref e, ref p)) = *res {
                 trace!("Assuming '{}' was deleted: {}", p, e);
             }
         })
@@ -317,7 +317,7 @@ fn hash_impl(hash_config: HashConfig) -> errors::Result<()> {
     let curr_elems = &hash_collection.elements;
     
     if let Some(prev_hash_collection) = prev_hash_collection {
-        if &prev_hash_collection.meth == &hash_collection.meth {
+        if prev_hash_collection.meth == hash_collection.meth {
             let prev_elems = &prev_hash_collection.elements;
 
             let possibly_new_entries: BTreeMap<&str, &str> = curr_elems.difference(prev_elems)
@@ -355,8 +355,8 @@ fn hash_impl(hash_config: HashConfig) -> errors::Result<()> {
                 });
 
             
-            let new_entries_count = print_and_sum_new_delete(new_entries, NdType::New);
-            let deleted_entries_count = print_and_sum_new_delete(deleted_entries, NdType::Deleted);
+            let new_entries_count = print_and_sum_new_delete(new_entries, &NdType::New);
+            let deleted_entries_count = print_and_sum_new_delete(deleted_entries, &NdType::Deleted);
             let modified_entries_count = print_and_sum_modified(modified_entries);
 
             info!("----- Summary -----");
@@ -377,7 +377,7 @@ fn hash_impl(hash_config: HashConfig) -> errors::Result<()> {
     Ok(())
 }
 
-fn addcommit_impl(addcommit_config: AddCommitConfig) -> errors::Result<()> {
+fn addcommit_impl(addcommit_config: &AddCommitConfig) -> errors::Result<()> {
     // performs possibly additional operations
     if addcommit_config.msg.is_empty() {
         bail!("Commit message cannot be empty for addcommit operation");
@@ -428,7 +428,7 @@ fn addcommit_impl(addcommit_config: AddCommitConfig) -> errors::Result<()> {
 
     // may not have any reference if this is the very first commit
     let head_ref = repo.head()
-        .map(|r| HeadRef::Ref(r))
+        .map(HeadRef::Ref)
         .or_else(|err| {
             if err.code() == ErrorCode::UnbornBranch {
                 Ok(HeadRef::UnbornBranch)
@@ -479,7 +479,7 @@ fn addcommit_impl(addcommit_config: AddCommitConfig) -> errors::Result<()> {
     Ok(())
 }
 
-fn run(arg_config: ArgConfig) -> errors::Result<()> {
+fn run(arg_config: &ArgConfig) -> errors::Result<()> {
     init_logger(&arg_config.log)?;
 
     let config_str = read_string_from_file(&arg_config.conf)?;
@@ -487,21 +487,21 @@ fn run(arg_config: ArgConfig) -> errors::Result<()> {
     let config: FileConfig = toml::from_str(&config_str)
         .chain_err(|| format!("Unable to parse config as required toml format: {}", config_str))?;
 
-    match &arg_config.ops {
-        &ArgOps::Init => {
-            init_impl(InitConfig {
+    match arg_config.ops {
+        ArgOps::Init => {
+            init_impl(&InitConfig {
                 file_config: config,
             })
         },
 
-        &ArgOps::Hash => {
-            hash_impl(HashConfig {
+        ArgOps::Hash => {
+            hash_impl(&HashConfig {
                 file_config: config,
             })
         },
 
-        &ArgOps::AddCommit { ref msg } => {
-            addcommit_impl(AddCommitConfig {
+        ArgOps::AddCommit { ref msg } => {
+            addcommit_impl(&AddCommitConfig {
                 file_config: config,
                 msg: msg.to_owned(),
             })
@@ -555,9 +555,9 @@ fn main() {
     let conf = matches.value_of(CONF_PARAM).unwrap_or("git_hasher_config.toml").to_owned();
     let log = matches.value_of(LOG_PARAM).map(|log| log.to_owned());
 
-    let ops = if let Some(_) = matches.subcommand_matches(INIT_SUB_CMD) {
+    let ops = if matches.subcommand_matches(INIT_SUB_CMD).is_some() {
         Some(ArgOps::Init)
-    } else if let Some(_) = matches.subcommand_matches(HASH_SUB_CMD) {
+    } else if matches.subcommand_matches(HASH_SUB_CMD).is_some() {
         Some(ArgOps::Hash)
     } else if let Some(submatches) = matches.subcommand_matches(ADDCOMMIT_SUB_CMD) {
         let msg = submatches.value_of(ADDCOMMIT_MSG_PARAM)
@@ -577,7 +577,7 @@ fn main() {
         ops: ops,
     };
 
-    match run(arg_config) {
+    match run(&arg_config) {
         Ok(_) => {
             info!("Program completed!");
             process::exit(0)
